@@ -6,22 +6,15 @@ var animate        = false;
 var use_simd       = false;
 var max_iterations = 100;
 
-// logging operations
-var logger = {
-  msg: function (msg) {
-    console.log (msg);
-  }
-}    
-
 // Basic canvas operations
 var canvas = function () {
 
   var _ctx;
   var _width;
   var _height;
-  
+
   var _image_data;
-  
+
   function init (canvas_id) {
     var $canvas = $(canvas_id);
     _ctx        = $canvas.get(0).getContext("2d");
@@ -29,20 +22,20 @@ var canvas = function () {
     _height     = $canvas.height();
     _image_data = _ctx.getImageData (0, 0, _width, _height);
   }
-  
+
   function clear () {
     for (var i = 0; i < _image_data.data.length; i = i + 4) {
       _image_data.data [i] = 0;
       _image_data.data [i+1] = 0;
       _image_data.data [i+2] = 0;
-      _image_data.data [i+3] = 0;
+      _image_data.data [i+3] = 255;
     }
   }
-  
+
   function update () {
     _ctx.putImageData (_image_data, 0, 0);
   }
-  
+
   function setPixel (x, y, rgb) {
     var index = 4*(x + _width*y);
     _image_data.data[index]   = rgb[0];
@@ -85,11 +78,11 @@ var canvas = function () {
   function getWidth () {
     return _width;
   }
-  
+
   function getHeight () {
     return _height;
   }
-  
+
   return {
     init:                init,
     clear:               clear,
@@ -124,10 +117,10 @@ function mandelx1 (c_re, c_im) {
 function mandelx4(c_re4, c_im4) {
   var z_re4  = c_re4;
   var z_im4  = c_im4;
-  var four4  = float32x4.splat (4.0);
-  var two4   = float32x4.splat (2.0);
-  var count4 = int32x4.splat (0);
-  var one4   = int32x4.splat (1);
+  var four4  = SIMD.float32x4.splat (4.0);
+  var two4   = SIMD.float32x4.splat (2.0);
+  var count4 = SIMD.int32x4.splat (0);
+  var one4   = SIMD.int32x4.splat (1);
 
   for (var i = 0; i < max_iterations; ++i) {
     var z_re24 = SIMD.float32x4.mul (z_re4, z_re4);
@@ -153,22 +146,43 @@ function drawMandelbrot (width, height, xc, yc, scale, use_simd) {
   var y0 = yc - scale;
   var xd = (3.0*scale)/width;
   var yd = (2.0*scale)/height;
-  
-  logger.msg ("drawMandelbrot(xc:" + xc + ", yc:" + yc + ")");
 
   var xf = x0;
   for (var x = 0; x < width; ++x) {
     var yf = y0;
     if (use_simd) {
       var ydx4 = 4*yd;
+      var xf4 = SIMD.float32x4.splat(xf);
       for (var y = 0; y < height; y += 4) {
-        var xf4 = float32x4(xf, xf, xf, xf);
-        var yf4 = float32x4(yf, yf+yd, yf+yd+yd, yf+yd+yd+yd);
-        var m4   = mandelx4 (xf4, yf4);
-        canvas.mapColorAndSetPixel (x, y,   m4.x);
-        canvas.mapColorAndSetPixel (x, y+1, m4.y);
-        canvas.mapColorAndSetPixel (x, y+2, m4.z);
-        canvas.mapColorAndSetPixel (x, y+3, m4.w);
+        var yf4 = SIMD.float32x4.construct(yf, yf+yd, yf+yd+yd, yf+yd+yd+yd);
+        var z_re4  = xf4;
+        var z_im4  = yf4;
+        var four4  = SIMD.float32x4.splat (4.0);
+        var two4   = SIMD.float32x4.splat (2.0);
+        var count4 = SIMD.int32x4.splat (0);
+        var one4   = SIMD.int32x4.splat (1);
+
+        for (var i = 0; i < max_iterations; ++i) {
+          var z_re24 = SIMD.float32x4.mul (z_re4, z_re4);
+          var z_im24 = SIMD.float32x4.mul (z_im4, z_im4);
+
+          var mi4    = SIMD.float32x4.lessThanOrEqual (SIMD.float32x4.add (z_re24, z_im24), four4);
+          // if all 4 values are greater than 4.0, there's no reason to continue
+          if (mi4.signMask === 0x00) {
+            break;
+          }
+
+          var new_re4 = SIMD.float32x4.sub (z_re24, z_im24);
+          var new_im4 = SIMD.float32x4.mul (SIMD.float32x4.mul (two4, z_re4), z_im4);
+          z_re4       = SIMD.float32x4.add (xf4, new_re4);
+          z_im4       = SIMD.float32x4.add (yf4, new_im4);
+          count4      = SIMD.int32x4.add (count4, SIMD.int32x4.and (mi4, one4));
+        }
+
+        canvas.mapColorAndSetPixel (x, y,   count4.x);
+        canvas.mapColorAndSetPixel (x, y+1, count4.y);
+        canvas.mapColorAndSetPixel (x, y+2, count4.z);
+        canvas.mapColorAndSetPixel (x, y+3, count4.w);
         yf += ydx4;
       }
     }
@@ -220,7 +234,7 @@ function animateMandelbrot () {
       update_fps (10000/(t - now));
       now = t;
     }
-  }  
+  }
 
   draw1 ();
 }
@@ -233,6 +247,7 @@ function update_fps (fps) {
 // input click handlers
 
 function start() {
+  if (animate) return;
   animate = true;
   animateMandelbrot ();
 }
@@ -242,7 +257,6 @@ function stop() {
 }
 
 function simd() {
-  logger.msg("use SIMD clicked");
   var $simd = $("#simd");
   var $info = $("#info");
   if (!use_simd) {
@@ -258,14 +272,13 @@ function simd() {
 }
 
 function main () {
-  logger.msg ("main()");
   canvas.init ("#mandel");
   canvas.clear ();
   canvas.update ();
   $("#start").click (start);
   $("#stop").click (stop);
   $("#simd").click (simd);
-  animateMandelbrot ();
+//  animateMandelbrot ();
 }
 
 $(main);
